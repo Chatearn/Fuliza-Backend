@@ -1,791 +1,715 @@
-require("dotenv").config();
+<!DOCTYPE html>
+<html lang="en">
 
-const express = require("express");
-const cors = require("cors");
-const axios = require("axios");
-const crypto = require("crypto");
+<head>
 
-const app = express();
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-const PORT = process.env.PORT || 3000;
+<title>FULIZA | Payment</title>
 
-const PAYLOR_BASE_URL =
-    "https://api.paylorke.com/api/v1";
+<style>
 
-const PAYLOR_API_KEY =
-    process.env.PAYLOR_API_KEY;
-
-const PAYLOR_CHANNEL_ID =
-    process.env.PAYLOR_CHANNEL_ID;
-
-const PAYLOR_WEBHOOK_SECRET =
-    process.env.PAYLOR_WEBHOOK_SECRET;
-
-const PUBLIC_BASE_URL =
-    process.env.PUBLIC_BASE_URL;
-
-
-/*
-=====================================================
-  BASIC CONFIGURATION CHECK
-=====================================================
-*/
-
-if (!PAYLOR_API_KEY) {
-    console.error(
-        "ERROR: PAYLOR_API_KEY is missing."
-    );
+*{
+    box-sizing:border-box;
 }
 
-if (!PUBLIC_BASE_URL) {
-    console.warn(
-        "WARNING: PUBLIC_BASE_URL is not configured."
-    );
+body{
+    margin:0;
+    padding:16px 10px;
+    font-family:Arial,sans-serif;
+    background:#00A651;
+    color:#000000;
 }
 
-
-/*
-=====================================================
-  CORS
-=====================================================
-*/
-
-app.use(
-    cors({
-        origin: true,
-        methods: ["GET", "POST"],
-        allowedHeaders: [
-            "Content-Type",
-            "Authorization"
-        ]
-    })
-);
-
-
-/*
-=====================================================
-  RAW BODY + JSON PARSER
-=====================================================
-
-  We keep the original request bytes because
-  Paylor webhook signatures are calculated from
-  the exact raw body.
-=====================================================
-*/
-
-app.use(
-    express.json({
-        verify: (req, res, buffer) => {
-            req.rawBody = buffer;
-        }
-    })
-);
-
-
-/*
-=====================================================
-  HEALTH CHECK
-=====================================================
-*/
-
-app.get("/", (req, res) => {
-
-    res.json({
-        success: true,
-        service: "FULIZA Paylor Backend",
-        status: "online"
-    });
-
-});
-
-
-/*
-=====================================================
-  PHONE NORMALIZATION
-=====================================================
-*/
-
-function normalizeKenyanPhone(phone) {
-
-    if (!phone) {
-        return null;
-    }
-
-    let value =
-        String(phone)
-            .trim()
-            .replace(/\s+/g, "")
-            .replace(/-/g, "");
-
-    if (value.startsWith("+")) {
-        value = value.substring(1);
-    }
-
-    /*
-      07XXXXXXXX
-      01XXXXXXXX
-    */
-
-    if (/^(07|01)\d{8}$/.test(value)) {
-
-        return "254" + value.substring(1);
-
-    }
-
-    /*
-      254XXXXXXXXX
-    */
-
-    if (/^254\d{9}$/.test(value)) {
-
-        return value;
-
-    }
-
-    return null;
+.container{
+    width:100%;
+    max-width:430px;
+    margin:0 auto;
 }
 
-
-/*
-=====================================================
-  AMOUNT VALIDATION
-=====================================================
-*/
-
-function validAmount(amount) {
-
-    const number =
-        Number(amount);
-
-    if (
-        !Number.isInteger(number) ||
-        number <= 0
-    ) {
-
-        return false;
-
-    }
-
-    return true;
-}
-
-
-/*
-=====================================================
-  CREATE PAYMENT REFERENCE
-=====================================================
-*/
-
-function createPaymentReference() {
-
-    return (
-        "FUL-" +
-        Date.now().toString(36).toUpperCase() +
-        "-" +
-        crypto.randomBytes(3)
-            .toString("hex")
-            .toUpperCase()
-    );
-
-}
-
-
-/*
-=====================================================
-  STK PUSH
-=====================================================
-*/
-
-app.post(
-    "/api/stk-push",
-    async (req, res) => {
-
-        try {
-
-            const {
-                phone,
-                amount,
-                selectedLimit,
-                fullName,
-                reference
-            } = req.body;
-
-
-            /*
-            -----------------------------------------
-              VALIDATE PHONE
-            -----------------------------------------
-            */
-
-            const stkPhone =
-                normalizeKenyanPhone(phone);
-
-            if (!stkPhone) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Please enter a valid Kenyan M-PESA phone number."
-
-                });
-
-            }
-
-
-            /*
-            -----------------------------------------
-              VALIDATE AMOUNT
-            -----------------------------------------
-            */
-
-            if (!validAmount(amount)) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Invalid payment amount."
-
-                });
-
-            }
-
-
-            /*
-            -----------------------------------------
-              REFERENCE
-            -----------------------------------------
-            */
-
-            const paymentReference =
-                reference &&
-                String(reference).trim()
-                    ? String(reference).trim()
-                    : createPaymentReference();
-
-
-            /*
-            -----------------------------------------
-              CALLBACK URL
-            -----------------------------------------
-            */
-
-            const callbackUrl =
-                PUBLIC_BASE_URL
-                    ? `${PUBLIC_BASE_URL}/api/paylor-callback`
-                    : undefined;
-
-
-            /*
-            -----------------------------------------
-              PAYLOAD
-            -----------------------------------------
-            */
-
-            const payload = {
-
-                phone: stkPhone,
-
-                amount:
-                    Number(amount),
-
-                reference:
-                    paymentReference,
-
-                description:
-                    "FULIZA payment"
-
-            };
-
-
-            /*
-              Only send channelId when configured.
-              Paylor can use the default active
-              channel when channelId is omitted.
-            */
-
-            if (PAYLOR_CHANNEL_ID) {
-
-                payload.channelId =
-                    PAYLOR_CHANNEL_ID;
-
-            }
-
-
-            if (callbackUrl) {
-
-                payload.callbackUrl =
-                    callbackUrl;
-
-            }
-
-
-            /*
-            -----------------------------------------
-              IDEMPOTENCY KEY
-            -----------------------------------------
-            */
-
-            const idempotencyKey =
-                paymentReference;
-
-
-            /*
-            -----------------------------------------
-              PAYLOR REQUEST
-            -----------------------------------------
-            */
-
-            console.log(
-                "STK request received:",
-                {
-                    phone: stkPhone,
-                    amount: Number(amount),
-                    reference: paymentReference,
-                    selectedLimit,
-                    fullName
-                }
-            );
-
-
-            const response =
-                await axios.post(
-
-                    `${PAYLOR_BASE_URL}/merchants/payments/stk-push`,
-
-                    payload,
-
-                    {
-                        headers: {
-
-                            Authorization:
-                                `Bearer ${PAYLOR_API_KEY}`,
-
-                            "Content-Type":
-                                "application/json",
-
-                            "Idempotency-Key":
-                                idempotencyKey
-
-                        },
-
-                        timeout: 30000
-
-                    }
-
-                );
-
-
-            const data =
-                response.data;
-
-
-            console.log(
-                "PAYLOR RESPONSE:",
-                data
-            );
-
-
-            /*
-            -----------------------------------------
-              RETURN TO FRONTEND
-            -----------------------------------------
-            */
-
-            return res.status(200).json({
-
-                success: true,
-
-                message:
-                    "STK Push sent successfully. Check your M-PESA phone.",
-
-                transactionId:
-                    data.transactionId || null,
-
-                reference:
-                    paymentReference,
-
-                status:
-                    data.status || "SENT"
-
-            });
-
-
-        } catch (error) {
-
-            console.error(
-                "STK PUSH ERROR:"
-            );
-
-
-            if (error.response) {
-
-                console.error(
-                    "Paylor status:",
-                    error.response.status
-                );
-
-                console.error(
-                    "Paylor data:",
-                    error.response.data
-                );
-
-            } else {
-
-                console.error(
-                    error.message
-                );
-
-            }
-
-
-            const statusCode =
-                error.response?.status || 500;
-
-
-            const paylorData =
-                error.response?.data;
-
-
-            const message =
-                paylorData?.message ||
-                paylorData?.error?.message ||
-                "Unable to initiate STK Push.";
-
-
-            return res.status(statusCode).json({
-
-                success: false,
-
-                message
-
-            });
-
-        }
-
-    }
-);
-
-
-/*
-=====================================================
-  PAYLOR CALLBACK / WEBHOOK
-=====================================================
-
-  Paylor signs callbacks using HMAC-SHA256.
-
-  Header:
-  X-Webhook-Signature
-=====================================================
-*/
-
-app.post(
-    "/api/paylor-callback",
-    (req, res) => {
-
-        try {
-
-            const signature =
-                req.headers[
-                    "x-webhook-signature"
-                ];
-
-
-            if (
-                !signature ||
-                !PAYLOR_WEBHOOK_SECRET
-            ) {
-
-                return res.status(401).json({
-
-                    success: false,
-
-                    message:
-                        "Webhook signature missing."
-
-                });
-
-            }
-
-
-            const expectedSignature =
-                crypto
-                    .createHmac(
-                        "sha256",
-                        PAYLOR_WEBHOOK_SECRET
-                    )
-                    .update(
-                        req.rawBody
-                    )
-                    .digest("hex");
-
-
-            /*
-            -----------------------------------------
-              SAFE SIGNATURE COMPARISON
-            -----------------------------------------
-            */
-
-            const receivedBuffer =
-                Buffer.from(
-                    String(signature),
-                    "utf8"
-                );
-
-            const expectedBuffer =
-                Buffer.from(
-                    expectedSignature,
-                    "utf8"
-                );
-
-
-            if (
-                receivedBuffer.length !==
-                expectedBuffer.length
-            ) {
-
-                return res.status(401).json({
-
-                    success: false,
-
-                    message:
-                        "Invalid webhook signature."
-
-                });
-
-            }
-
-
-            if (
-                !crypto.timingSafeEqual(
-                    receivedBuffer,
-                    expectedBuffer
-                )
-            ) {
-
-                return res.status(401).json({
-
-                    success: false,
-
-                    message:
-                        "Invalid webhook signature."
-
-                });
-
-            }
-
-
-            /*
-            -----------------------------------------
-              VERIFIED PAYLOR CALLBACK
-            -----------------------------------------
-            */
-
-            const event =
-                req.body.event;
-
-            const transaction =
-                req.body.transaction;
-
-
-            console.log(
-                "VERIFIED PAYLOR CALLBACK:",
-                {
-                    event,
-                    transaction
-                }
-            );
-
-
-            /*
-            -----------------------------------------
-              PAYMENT SUCCESS
-            -----------------------------------------
-            */
-
-            if (
-                event ===
-                "payment.success"
-            ) {
-
-                console.log(
-                    "PAYMENT SUCCESS:",
-                    transaction?.reference
-                );
-
-                /*
-                  IMPORTANT:
-
-                  This is where you should update
-                  your database/order to PAID.
-
-                  Do NOT mark a payment as paid merely
-                  because STK Push was SENT.
-                */
-
-            }
-
-
-            /*
-            -----------------------------------------
-              PAYMENT FAILURE
-            -----------------------------------------
-            */
-
-            if (
-                event ===
-                "payment.failed"
-            ) {
-
-                console.log(
-                    "PAYMENT FAILED:",
-                    transaction?.reference
-                );
-
-            }
-
-
-            /*
-            -----------------------------------------
-              ACKNOWLEDGE CALLBACK
-            -----------------------------------------
-            */
-
-            return res.status(200).json({
-
-                received: true
-
-            });
-
-
-        } catch (error) {
-
-            console.error(
-                "CALLBACK ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-
-                success: false,
-
-                message:
-                    "Webhook processing failed."
-
-            });
-
-        }
-
-    }
-);
-
-
-/*
-=====================================================
-  QUERY PAYMENT STATUS
-=====================================================
-*/
-
-app.get(
-    "/api/payment-status/:transactionId",
-    async (req, res) => {
-
-        try {
-
-            const transactionId =
-                req.params.transactionId;
-
-
-            if (!transactionId) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    message:
-                        "Transaction ID is required."
-
-                });
-
-            }
-
-
-            const response =
-                await axios.get(
-
-                    `${PAYLOR_BASE_URL}/merchants/payments/transactions/${encodeURIComponent(transactionId)}`,
-
-                    {
-                        headers: {
-
-                            Authorization:
-                                `Bearer ${PAYLOR_API_KEY}`,
-
-                            "Content-Type":
-                                "application/json"
-
-                        },
-
-                        timeout: 30000
-
-                    }
-
-                );
-
-
-            return res.status(200).json({
-
-                success: true,
-
-                transaction:
-                    response.data
-
-            });
-
-
-        } catch (error) {
-
-            console.error(
-                "STATUS ERROR:",
-                error.response?.data ||
-                error.message
-            );
-
-
-            return res.status(
-                error.response?.status || 500
-            ).json({
-
-                success: false,
-
-                message:
-                    error.response?.data?.message ||
-                    "Unable to check payment status."
-
-            });
-
-        }
-
-    }
-);
-
-
-/*
-=====================================================
-  START SERVER
-=====================================================
-*/
-
-app.listen(
-    PORT,
-    () => {
-
-        console.log(
-            `FULIZA backend running on port ${PORT}`
+.card{
+    width:100%;
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,0.09),
+            rgba(255,255,255,0.035)
         );
 
+    padding:22px 18px 18px;
+    border-radius:18px;
+
+    box-shadow:
+        0 20px 60px rgba(0,0,0,0.45),
+        inset 0 1px 0 rgba(255,255,255,0.05);
+
+    border:1px solid #000000;
+}
+
+/* PAYMENT HEADING */
+
+h1{
+    text-align:center;
+    background:#000000;
+    color:#FFFFFF;
+    -webkit-text-stroke:1px #FFFFFF;
+    font-size:28px;
+    font-weight:800;
+    margin:2px 0 16px;
+    padding:10px;
+    border:1px solid #E31837;
+    border-radius:10px;
+}
+
+p{
+    text-align:center;
+    font-size:14px;
+    line-height:1.5;
+    color:#FFFFFF;
+}
+
+.amount{
+    background:#FFFFFF;
+    border:2px solid #E31837;
+    border-radius:12px;
+    padding:16px 10px;
+    font-size:25px;
+    font-weight:800;
+    text-align:center;
+    color:#000000;
+    -webkit-text-stroke:0.8px #000000;
+    margin:18px 0;
+}
+
+label{
+    display:block;
+    margin-top:15px;
+    margin-bottom:7px;
+    font-size:14px;
+    font-weight:700;
+    color:#FFFFFF;
+}
+
+input{
+    width:100%;
+    padding:14px 12px;
+    border:1px solid #000000;
+    border-radius:10px;
+    font-size:16px;
+    background:#FFFFFF;
+    color:#000000;
+    outline:none;
+}
+
+input::placeholder{
+    color:#666666;
+}
+
+input:focus{
+    border-color:#E31837;
+    box-shadow:
+        0 0 0 3px rgba(227,24,55,0.20);
+}
+
+button{
+    width:100%;
+    padding:15px;
+    margin-top:17px;
+
+    background:#000000;
+
+    color:#FFFFFF;
+    border:1px solid #E31837;
+    border-radius:11px;
+    font-size:16px;
+    font-weight:700;
+    cursor:pointer;
+
+    box-shadow:
+        0 10px 30px rgba(0,0,0,0.30);
+}
+
+button:hover{
+    background:#000000;
+}
+
+button:active{
+    transform:scale(.98);
+}
+
+button:disabled{
+    background:rgba(0,0,0,0.35);
+    cursor:not-allowed;
+    box-shadow:none;
+}
+
+#paymentMessage{
+    min-height:20px;
+    margin-top:13px;
+    color:#FFFFFF;
+    -webkit-text-stroke:0.6px #000000;
+    font-size:15px;
+    font-weight:900;
+    line-height:1.5;
+}
+
+@media(max-width:360px){
+
+    body{
+        padding:10px 7px;
     }
-);
+
+    .card{
+        padding:18px 13px 15px;
+        border-radius:15px;
+    }
+
+    h1{
+        font-size:24px;
+    }
+
+    button{
+        padding:14px;
+        font-size:15px;
+    }
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="card">
+
+<h1>Payment</h1>
+
+<p>
+Welcome, <strong><span id="name"></span></strong>
+</p>
+
+<p>
+Complete the payment below to continue with your FULIZA limit request.
+</p>
+
+
+<div class="amount" id="selectedAmount">
+Selected Limit: KSh 0
+</div>
+
+
+<div class="amount" id="feeAmount">
+Payment Fee: KSh 0
+</div>
+
+
+<label>
+Full Name
+</label>
+
+<input
+    type="text"
+    id="fullName"
+    readonly
+>
+
+
+<label>
+M-PESA Phone Number
+</label>
+
+<input
+    type="tel"
+    id="phone"
+    placeholder="07XXXXXXXX"
+    autocomplete="tel"
+>
+
+
+<button
+    type="button"
+    id="payBtn"
+    onclick="payNow()"
+>
+    Continue to Payment
+</button>
+
+
+<p id="paymentMessage"></p>
+
+</div>
+
+</div>
+
+
+<script>
+
+/* =====================================================
+   FULIZA SELECTED LIMIT
+===================================================== */
+
+const selectedLimit =
+    localStorage.getItem(
+        "fulizaaSelectedSlot"
+    );
+
+
+/* =====================================================
+   LIMIT + FEE MAPPING
+===================================================== */
+
+const fees = {
+
+    "10000": 1,
+
+    "20000": 400,
+
+    "30000": 500,
+
+    "40000": 600,
+
+    "50000": 700,
+
+    "60000": 800,
+
+    "70000": 900,
+
+    "80000": 950,
+
+    "90000": 1000,
+
+    "100000": 1050
+
+};
+
+
+/* =====================================================
+   VALIDATE SELECTED LIMIT
+===================================================== */
+
+const paymentFee =
+    fees[selectedLimit];
+
+
+if (
+    !selectedLimit ||
+    paymentFee === undefined
+) {
+
+    document.getElementById(
+        "paymentMessage"
+    ).textContent =
+        "No valid limit was selected.";
+
+} else {
+
+    document.getElementById(
+        "selectedAmount"
+    ).textContent =
+        "Selected Limit: KSh " +
+        Number(
+            selectedLimit
+        ).toLocaleString();
+
+
+    document.getElementById(
+        "feeAmount"
+    ).textContent =
+        "Payment Fee: KSh " +
+        Number(
+            paymentFee
+        ).toLocaleString();
+
+
+    localStorage.setItem(
+        "fulizaaPaymentFee",
+        paymentFee
+    );
+
+}
+
+
+/* =====================================================
+   LOAD NAME
+===================================================== */
+
+const savedName =
+    localStorage.getItem(
+        "fulizaFullName"
+    );
+
+
+const firstName =
+    savedName
+        ? savedName
+            .trim()
+            .split(/\s+/)[0]
+        : "Client";
+
+
+document.getElementById(
+    "name"
+).textContent =
+    firstName;
+
+
+document.getElementById(
+    "fullName"
+).value =
+    savedName || "";
+
+
+/* =====================================================
+   CREATE APPLICATION REFERENCE
+===================================================== */
+
+let applicationReference =
+    localStorage.getItem(
+        "fulizaaApplicationReference"
+    );
+
+
+if (!applicationReference) {
+
+    applicationReference =
+        "FUL-" +
+        Date.now()
+            .toString(36)
+            .toUpperCase();
+
+    localStorage.setItem(
+        "fulizaaApplicationReference",
+        applicationReference
+    );
+
+}
+
+
+/* =====================================================
+   PAY NOW — REAL STK PUSH
+===================================================== */
+
+async function payNow(){
+
+    const message =
+        document.getElementById(
+            "paymentMessage"
+        );
+
+    const payBtn =
+        document.getElementById(
+            "payBtn"
+        );
+
+    const phoneInput =
+        document.getElementById(
+            "phone"
+        );
+
+
+    /* -----------------------------------------
+       VALIDATE LIMIT
+    ----------------------------------------- */
+
+    if(
+        !selectedLimit ||
+        paymentFee === undefined
+    ){
+
+        message.textContent =
+            "Please select a valid limit first.";
+
+        return;
+
+    }
+
+
+    /* -----------------------------------------
+       PHONE
+    ----------------------------------------- */
+
+    const phone =
+        phoneInput.value.trim();
+
+
+    if(!phone){
+
+        message.textContent =
+            "Please enter your M-PESA phone number.";
+
+        phoneInput.focus();
+
+        return;
+
+    }
+
+
+    /* -----------------------------------------
+       BASIC KENYAN PHONE VALIDATION
+    ----------------------------------------- */
+
+    const cleanPhone =
+        phone
+            .replace(/\s+/g,"")
+            .replace(/-/g,"");
+
+
+    const validPhone =
+        /^(07|01)\d{8}$/.test(cleanPhone) ||
+        /^\+254\d{9}$/.test(cleanPhone) ||
+        /^254\d{9}$/.test(cleanPhone);
+
+
+    if(!validPhone){
+
+        message.textContent =
+            "Please enter a valid Kenyan phone number.";
+
+        phoneInput.focus();
+
+        return;
+
+    }
+
+
+    /* -----------------------------------------
+       CONVERT TO 254XXXXXXXXX
+    ----------------------------------------- */
+
+    let stkPhone =
+        cleanPhone;
+
+
+    if(
+        /^(07|01)\d{8}$/.test(stkPhone)
+    ){
+
+        stkPhone =
+            "254" +
+            stkPhone.substring(1);
+
+    }
+
+
+    if(
+        stkPhone.startsWith("+")
+    ){
+
+        stkPhone =
+            stkPhone.substring(1);
+
+    }
+
+
+    /* -----------------------------------------
+       SAVE LOCAL DATA
+    ----------------------------------------- */
+
+    localStorage.setItem(
+        "fulizaaPhoneNumber",
+        stkPhone
+    );
+
+
+    localStorage.setItem(
+        "fulizaaPaymentAmount",
+        paymentFee
+    );
+
+
+    localStorage.setItem(
+        "fulizaaSelectedLimit",
+        selectedLimit
+    );
+
+
+    /* -----------------------------------------
+       CREATE PAYMENT REFERENCE
+    ----------------------------------------- */
+
+    const paymentReference =
+        "PAY-" +
+        Date.now()
+            .toString(36)
+            .toUpperCase();
+
+
+    localStorage.setItem(
+        "fulizaaPaymentReference",
+        paymentReference
+    );
+
+
+    /* -----------------------------------------
+       DISABLE BUTTON
+    ----------------------------------------- */
+
+    payBtn.disabled = true;
+
+    payBtn.textContent =
+        "Sending STK Push...";
+
+
+    message.textContent =
+        "Please wait. Sending payment prompt to your M-PESA phone...";
+
+
+    /* -----------------------------------------
+       SEND TO LIVE RENDER BACKEND
+    ----------------------------------------- */
+
+    try{
+
+        const response =
+            await fetch(
+                "https://fuliza-backend-1-o8h6.onrender.com/api/stk-push",
+                {
+
+                    method:"POST",
+
+                    headers:{
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body:JSON.stringify({
+
+                        phone:
+                            stkPhone,
+
+                        amount:
+                            Number(
+                                paymentFee
+                            ),
+
+                        selectedLimit:
+                            Number(
+                                selectedLimit
+                            ),
+
+                        fullName:
+                            savedName || "",
+
+                        reference:
+                            paymentReference
+
+                    })
+
+                }
+            );
+
+
+        const data =
+            await response.json();
+
+
+        /* -----------------------------------------
+           SERVER ERROR
+        ----------------------------------------- */
+
+        if(!response.ok){
+
+            throw new Error(
+
+                data.message ||
+                data.error ||
+                "Unable to send STK Push."
+
+            );
+
+        }
+
+
+        /* -----------------------------------------
+           SAVE SERVER REFERENCE
+        ----------------------------------------- */
+
+        if(
+            data.transactionId
+        ){
+
+            localStorage.setItem(
+                "fulizaaTransactionId",
+                data.transactionId
+            );
+
+        }
+
+
+        if(
+            data.reference
+        ){
+
+            localStorage.setItem(
+                "fulizaaPaymentReference",
+                data.reference
+            );
+
+        }
+
+
+        /* -----------------------------------------
+           SUCCESS
+        ----------------------------------------- */
+
+        payBtn.textContent =
+            "STK Sent";
+
+
+        message.textContent =
+            data.message ||
+            "STK Push sent successfully. Check your M-PESA phone and enter your PIN.";
+
+
+        console.log(
+            "Application Reference:",
+            applicationReference
+        );
+
+
+        console.log(
+            "Payment Reference:",
+            data.reference ||
+            paymentReference
+        );
+
+
+        console.log(
+            "Paylor Response:",
+            data
+        );
+
+
+    }catch(error){
+
+        console.error(
+            "STK Push Error:",
+            error
+        );
+
+
+        message.textContent =
+            error.message ||
+            "Payment request failed. Please try again.";
+
+
+        payBtn.disabled =
+            false;
+
+
+        payBtn.textContent =
+            "Continue to Payment";
+
+    }
+
+}
+
+</script>
+
+</body>
+
+</html>
