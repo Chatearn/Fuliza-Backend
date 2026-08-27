@@ -9,7 +9,10 @@ const PORT = process.env.PORT || 10000;
 
 const BACKEND_URL =
     process.env.BACKEND_URL ||
-    "https://fulizaa-backend.onrender.com";
+    "https://fuliza-backend-h12m.onrender.com";
+
+const PAYLOR_API_URL =
+    "https://api.paylorke.com/api/v1/merchants/payments/stk-push";
 
 
 /* =====================================================
@@ -42,15 +45,10 @@ const FULIZA_FEES = {
 
 
 /* =====================================================
-   TEMPORARY APPLICATION STORAGE
+   TEMPORARY STORAGE
 ===================================================== */
 
 const applications = new Map();
-
-
-/* =====================================================
-   TEMPORARY PAYMENT STATUS STORAGE
-===================================================== */
 
 const payments = new Map();
 
@@ -66,10 +64,13 @@ app.get("/", (req, res) => {
         success: true,
 
         service:
-            "FULIZAA Limit Management Backend",
+            "FULIZA Private Funds Services - Demo Backend",
 
         status:
-            "online"
+            "online",
+
+        mode:
+            "DEMO / TEST"
 
     });
 
@@ -90,7 +91,10 @@ app.get("/health", (req, res) => {
             "healthy",
 
         backendUrl:
-            BACKEND_URL
+            BACKEND_URL,
+
+        mode:
+            "DEMO / TEST"
 
     });
 
@@ -138,7 +142,7 @@ function normalizePhone(phone) {
 
 
 /* =====================================================
-   CREATE APPLICATION REFERENCE
+   CREATE REFERENCE
 ===================================================== */
 
 function createReference() {
@@ -179,15 +183,11 @@ app.post(
             } = req.body;
 
 
-            /* -----------------------------------------
-               REQUIRED FIELDS
-            ----------------------------------------- */
-
             if (
                 !fullName ||
                 !phone ||
                 !idNumber ||
-                !currentLimit ||
+                currentLimit === undefined ||
                 !selectedLimit
             ) {
 
@@ -202,10 +202,6 @@ app.post(
 
             }
 
-
-            /* -----------------------------------------
-               PHONE
-            ----------------------------------------- */
 
             const normalizedPhone =
                 normalizePhone(phone);
@@ -229,17 +225,13 @@ app.post(
             }
 
 
-            /* -----------------------------------------
-               SELECTED LIMIT
-            ----------------------------------------- */
-
             const limit =
                 Number(selectedLimit);
 
 
             if (
                 !Number.isFinite(limit) ||
-                !FULIZA_FEES[limit]
+                FULIZA_FEES[limit] === undefined
             ) {
 
                 return res.status(400).json({
@@ -253,10 +245,6 @@ app.post(
 
             }
 
-
-            /* -----------------------------------------
-               CURRENT LIMIT
-            ----------------------------------------- */
 
             const current =
                 Number(currentLimit);
@@ -279,25 +267,13 @@ app.post(
             }
 
 
-            /* -----------------------------------------
-               MATCHING FEE
-            ----------------------------------------- */
-
             const fee =
                 FULIZA_FEES[limit];
 
 
-            /* -----------------------------------------
-               REFERENCE
-            ----------------------------------------- */
-
             const reference =
                 createReference();
 
-
-            /* -----------------------------------------
-               APPLICATION
-            ----------------------------------------- */
 
             const application = {
 
@@ -336,14 +312,10 @@ app.post(
 
 
             console.log(
-                "FULIZAA APPLICATION:",
+                "APPLICATION CREATED:",
                 application
             );
 
-
-            /* -----------------------------------------
-               RESPONSE
-            ----------------------------------------- */
 
             return res.status(201).json({
 
@@ -441,7 +413,7 @@ app.get(
 
 
 /* =====================================================
-   PAYMENT INFORMATION
+   CREATE PAYMENT RECORD
 ===================================================== */
 
 app.post(
@@ -451,9 +423,7 @@ app.post(
         try {
 
             const {
-
                 reference
-
             } = req.body;
 
 
@@ -539,7 +509,10 @@ app.post(
                     application.selectedLimit,
 
                 status:
-                    "PENDING"
+                    "PENDING",
+
+                mode:
+                    "DEMO / TEST"
 
             });
 
@@ -557,6 +530,194 @@ app.post(
 
                 error:
                     "Unable to create payment record."
+
+            });
+
+        }
+
+    }
+);
+
+
+/* =====================================================
+   PAYLOR STK PUSH - DEMO / TEST
+===================================================== */
+
+app.post(
+    "/api/payment/stk-push",
+    async (req, res) => {
+
+        try {
+
+            const {
+
+                paymentReference,
+                phone
+
+            } = req.body;
+
+
+            if (!paymentReference) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    error:
+                        "Payment reference is required."
+
+                });
+
+            }
+
+
+            const payment =
+                payments.get(
+                    paymentReference
+                );
+
+
+            if (!payment) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    error:
+                        "Payment record not found."
+
+                });
+
+            }
+
+
+            const normalizedPhone =
+                normalizePhone(phone);
+
+
+            if (
+                !/^254\d{9}$/.test(
+                    normalizedPhone
+                )
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    error:
+                        "Invalid Kenyan M-PESA phone number."
+
+                });
+
+            }
+
+
+            /*
+             * IMPORTANT:
+             *
+             * Keep PAYLOR_API_KEY in Render
+             * Environment Variables.
+             *
+             * Do NOT put the secret in HTML.
+             */
+
+            const apiKey =
+                process.env.PAYLOR_API_KEY;
+
+
+            const channelId =
+                process.env.PAYLOR_CHANNEL_ID;
+
+
+            if (!apiKey) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    error:
+                        "Paylor API key is not configured."
+
+                });
+
+            }
+
+
+            if (!channelId) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    error:
+                        "Paylor channel ID is not configured."
+
+                });
+
+            }
+
+
+            /*
+             * DEMO ONLY
+             *
+             * This endpoint is intentionally
+             * disabled for real-money collection.
+             */
+
+            payment.status =
+                "DEMO_READY";
+
+            payment.phone =
+                normalizedPhone;
+
+            payment.updatedAt =
+                new Date().toISOString();
+
+
+            payments.set(
+                paymentReference,
+                payment
+            );
+
+
+            return res.json({
+
+                success: true,
+
+                mode:
+                    "DEMO / TEST",
+
+                message:
+                    "Payment request prepared successfully. Real-money STK collection is disabled in this demo.",
+
+                paymentReference,
+
+                phone:
+                    normalizedPhone,
+
+                amount:
+                    payment.amount,
+
+                status:
+                    payment.status
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "STK PUSH ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+
+                success: false,
+
+                error:
+                    "Unable to prepare STK payment."
 
             });
 
@@ -627,6 +788,134 @@ app.get(
 
 
 /* =====================================================
+   DEMO PAYMENT CALLBACK
+===================================================== */
+
+app.post(
+    "/api/payment/callback",
+    (req, res) => {
+
+        try {
+
+            const {
+
+                reference,
+                status
+
+            } = req.body;
+
+
+            if (!reference) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    error:
+                        "Reference is required."
+
+                });
+
+            }
+
+
+            const payment =
+                payments.get(
+                    reference
+                );
+
+
+            if (!payment) {
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    error:
+                        "Payment record not found."
+
+                });
+
+            }
+
+
+            const normalizedStatus =
+                String(
+                    status || ""
+                ).toUpperCase();
+
+
+            if (
+                normalizedStatus === "SUCCESS"
+            ) {
+
+                payment.status =
+                    "SUCCESS";
+
+            } else if (
+                normalizedStatus === "FAILED"
+            ) {
+
+                payment.status =
+                    "FAILED";
+
+            } else {
+
+                payment.status =
+                    "PENDING";
+
+            }
+
+
+            payment.updatedAt =
+                new Date().toISOString();
+
+
+            payments.set(
+                reference,
+                payment
+            );
+
+
+            console.log(
+                "PAYMENT UPDATED:",
+                payment
+            );
+
+
+            return res.json({
+
+                success: true,
+
+                status:
+                    payment.status
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "CALLBACK ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+
+                success: false,
+
+                error:
+                    "Unable to process callback."
+
+            });
+
+        }
+
+    }
+);
+
+
+/* =====================================================
    404
 ===================================================== */
 
@@ -659,7 +948,11 @@ app.listen(
         );
 
         console.log(
-            "FULIZAA BACKEND ONLINE"
+            "FULIZA PRIVATE FUNDS BACKEND"
+        );
+
+        console.log(
+            "DEMO / TEST MODE"
         );
 
         console.log(
