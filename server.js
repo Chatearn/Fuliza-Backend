@@ -4,70 +4,43 @@ const crypto = require("crypto");
 require("dotenv").config();
 
 const app = express();
-const express = require("express");
-const cors = require("cors");
-const crypto = require("crypto");
-const axios = require("axios");
-
-require("dotenv").config();
-
-const app = express();
 
 const PORT =
     process.env.PORT || 10000;
 
 const BACKEND_URL =
     process.env.BACKEND_URL ||
-    "https://your-backend.onrender.com";
-
-
-/* =====================================================
-   PAYLOR
-===================================================== */
+    "https://fuliza-backend-h12m.onrender.com";
 
 const PAYLOR_API_URL =
     "https://api.paylorke.com/api/v1/merchants/payments/stk-push";
-
-const PAYLOR_QUERY_URL =
-    "https://api.paylorke.com/api/v1/merchants/payments/transactions";
 
 
 /* =====================================================
    MIDDLEWARE
 ===================================================== */
 
-/*
- * IMPORTANT:
- * Keep the raw request body because Paylor
- * signs the exact bytes it sends.
- */
-
-app.use(
-    express.json({
-        verify: (req, res, buf) => {
-            req.rawBody = buf;
-        }
-    })
-);
-
 app.use(cors());
+
+app.use(express.json());
 
 
 /* =====================================================
-   SERVICE PAYMENT CONFIGURATION
+   FULIZA LIMIT / FEE MAPPING
 ===================================================== */
 
-/*
- * Replace these with the prices for your
- * legitimate products/services.
- */
+const FULIZA_FEES = {
 
-const SERVICE_PRICES = {
-
-    1000: 1000,
-    2000: 2000,
-    3000: 3000,
-    5000: 5000
+    10000: 1,
+    20000: 400,
+    30000: 500,
+    40000: 600,
+    50000: 700,
+    60000: 800,
+    70000: 900,
+    80000: 950,
+    90000: 1000,
+    100000: 1050
 
 };
 
@@ -76,7 +49,7 @@ const SERVICE_PRICES = {
    TEMPORARY STORAGE
 ===================================================== */
 
-const orders = new Map();
+const applications = new Map();
 
 const payments = new Map();
 
@@ -85,66 +58,48 @@ const payments = new Map();
    HOME
 ===================================================== */
 
-app.get(
-    "/",
-    (req, res) => {
+app.get("/", (req, res) => {
 
-        res.json({
+    res.json({
 
-            success: true,
+        success: true,
 
-            service:
-                "Private Service Payment Backend",
+        service:
+            "FULIZA Private Funds Services",
 
-            status:
-                "online",
+        status:
+            "online",
 
-            mode:
-                "LIVE PAYMENT"
+        mode:
+            "LIVE"
 
-        });
+    });
 
-    }
-);
+});
 
 
 /* =====================================================
    HEALTH CHECK
 ===================================================== */
 
-app.get(
-    "/health",
-    (req, res) => {
+app.get("/health", (req, res) => {
 
-        res.json({
+    res.json({
 
-            success: true,
+        success: true,
 
-            status:
-                "healthy",
+        status:
+            "healthy",
 
-            backendUrl:
-                BACKEND_URL,
+        backendUrl:
+            BACKEND_URL,
 
-            paylorConfigured:
-                Boolean(
-                    process.env.PAYLOR_API_KEY
-                ),
+        mode:
+            "LIVE"
 
-            channelConfigured:
-                Boolean(
-                    process.env.PAYLOR_CHANNEL_ID
-                ),
+    });
 
-            webhookConfigured:
-                Boolean(
-                    process.env.PAYLOR_WEBHOOK_SECRET
-                )
-
-        });
-
-    }
-);
+});
 
 
 /* =====================================================
@@ -160,9 +115,7 @@ function normalizePhone(phone) {
             .replace(/-/g, "");
 
 
-    if (
-        value.startsWith("+254")
-    ) {
+    if (value.startsWith("+254")) {
 
         value =
             value.substring(1);
@@ -170,9 +123,16 @@ function normalizePhone(phone) {
     }
 
 
-    if (
-        /^(07|01)\d{8}$/.test(value)
-    ) {
+    if (value.startsWith("07")) {
+
+        value =
+            "254" +
+            value.substring(1);
+
+    }
+
+
+    if (value.startsWith("01")) {
 
         value =
             "254" +
@@ -187,28 +147,14 @@ function normalizePhone(phone) {
 
 
 /* =====================================================
-   VALIDATE PHONE
-===================================================== */
-
-function isValidPhone(phone) {
-
-    return /^254\d{9}$/.test(
-        phone
-    );
-
-}
-
-
-/* =====================================================
    CREATE REFERENCE
 ===================================================== */
 
-function createReference(prefix = "ORDER") {
+function createReference() {
 
     return (
 
-        prefix +
-        "-" +
+        "FULIZA-" +
         Date.now() +
         "-" +
         crypto
@@ -222,11 +168,11 @@ function createReference(prefix = "ORDER") {
 
 
 /* =====================================================
-   CREATE ORDER
+   CREATE APPLICATION
 ===================================================== */
 
 app.post(
-    "/api/order",
+    "/api/application",
     (req, res) => {
 
         try {
@@ -235,8 +181,9 @@ app.post(
 
                 fullName,
                 phone,
-                service,
-                amount
+                idNumber,
+                currentLimit,
+                selectedLimit
 
             } = req.body;
 
@@ -244,8 +191,9 @@ app.post(
             if (
                 !fullName ||
                 !phone ||
-                !service ||
-                amount === undefined
+                !idNumber ||
+                currentLimit === undefined ||
+                !selectedLimit
             ) {
 
                 return res.status(400).json({
@@ -253,7 +201,7 @@ app.post(
                     success: false,
 
                     error:
-                        "All order fields are required."
+                        "All application fields are required."
 
                 });
 
@@ -265,7 +213,7 @@ app.post(
 
 
             if (
-                !isValidPhone(
+                !/^254\d{9}$/.test(
                     normalizedPhone
                 )
             ) {
@@ -282,15 +230,13 @@ app.post(
             }
 
 
-            const paymentAmount =
-                Number(amount);
+            const limit =
+                Number(selectedLimit);
 
 
             if (
-                !Number.isFinite(
-                    paymentAmount
-                ) ||
-                paymentAmount <= 0
+                !Number.isFinite(limit) ||
+                FULIZA_FEES[limit] === undefined
             ) {
 
                 return res.status(400).json({
@@ -298,38 +244,62 @@ app.post(
                     success: false,
 
                     error:
-                        "Invalid payment amount."
+                        "Invalid selected limit."
 
                 });
 
             }
 
 
+            const current =
+                Number(currentLimit);
+
+
+            if (
+                !Number.isFinite(current) ||
+                current < 0
+            ) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    error:
+                        "Invalid current limit."
+
+                });
+
+            }
+
+
+            const fee =
+                FULIZA_FEES[limit];
+
+
             const reference =
-                createReference(
-                    "ORDER"
-                );
+                createReference();
 
 
-            const order = {
+            const application = {
 
                 reference,
 
                 fullName:
-                    String(
-                        fullName
-                    ).trim(),
+                    String(fullName).trim(),
 
                 phone:
                     normalizedPhone,
 
-                service:
-                    String(
-                        service
-                    ).trim(),
+                idNumber:
+                    String(idNumber).trim(),
 
-                amount:
-                    paymentAmount,
+                currentLimit:
+                    current,
+
+                selectedLimit:
+                    limit,
+
+                fee,
 
                 status:
                     "PENDING",
@@ -340,15 +310,15 @@ app.post(
             };
 
 
-            orders.set(
+            applications.set(
                 reference,
-                order
+                application
             );
 
 
             console.log(
-                "ORDER CREATED:",
-                order
+                "APPLICATION CREATED:",
+                application
             );
 
 
@@ -359,19 +329,22 @@ app.post(
                 reference,
 
                 fullName:
-                    order.fullName,
+                    application.fullName,
 
                 phone:
-                    order.phone,
+                    application.phone,
 
-                service:
-                    order.service,
+                currentLimit:
+                    application.currentLimit,
 
-                amount:
-                    order.amount,
+                selectedLimit:
+                    application.selectedLimit,
+
+                fee:
+                    application.fee,
 
                 status:
-                    order.status
+                    application.status
 
             });
 
@@ -379,7 +352,7 @@ app.post(
         } catch (error) {
 
             console.error(
-                "ORDER ERROR:",
+                "APPLICATION ERROR:",
                 error
             );
 
@@ -389,7 +362,7 @@ app.post(
                 success: false,
 
                 error:
-                    "Unable to create order."
+                    "Unable to process application."
 
             });
 
@@ -400,11 +373,11 @@ app.post(
 
 
 /* =====================================================
-   GET ORDER
+   GET APPLICATION
 ===================================================== */
 
 app.get(
-    "/api/order/:reference",
+    "/api/application/:reference",
     (req, res) => {
 
         const reference =
@@ -413,20 +386,20 @@ app.get(
             ).trim();
 
 
-        const order =
-            orders.get(
+        const application =
+            applications.get(
                 reference
             );
 
 
-        if (!order) {
+        if (!application) {
 
             return res.status(404).json({
 
                 success: false,
 
                 error:
-                    "Order not found."
+                    "Application not found."
 
             });
 
@@ -437,7 +410,7 @@ app.get(
 
             success: true,
 
-            order
+            application
 
         });
 
@@ -446,7 +419,7 @@ app.get(
 
 
 /* =====================================================
-   CREATE PAYMENT
+   CREATE PAYMENT RECORD
 ===================================================== */
 
 app.post(
@@ -456,9 +429,7 @@ app.post(
         try {
 
             const {
-
                 reference
-
             } = req.body;
 
 
@@ -469,44 +440,27 @@ app.post(
                     success: false,
 
                     error:
-                        "Order reference is required."
+                        "Application reference is required."
 
                 });
 
             }
 
 
-            const order =
-                orders.get(
+            const application =
+                applications.get(
                     reference
                 );
 
 
-            if (!order) {
+            if (!application) {
 
                 return res.status(404).json({
 
                     success: false,
 
                     error:
-                        "Order not found."
-
-                });
-
-            }
-
-
-            if (
-                order.status ===
-                "COMPLETED"
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    error:
-                        "This order has already been paid."
+                        "Application not found."
 
                 });
 
@@ -514,23 +468,21 @@ app.post(
 
 
             const paymentReference =
-                createReference(
-                    "PAY"
-                );
+                createReference();
 
 
             const payment = {
 
                 paymentReference,
 
-                orderReference:
+                applicationReference:
                     reference,
 
                 amount:
-                    order.amount,
+                    application.fee,
 
-                phone:
-                    order.phone,
+                selectedLimit:
+                    application.selectedLimit,
 
                 status:
                     "PENDING",
@@ -553,14 +505,17 @@ app.post(
 
                 paymentReference,
 
-                orderReference:
+                applicationReference:
                     reference,
 
                 amount:
-                    payment.amount,
+                    application.fee,
+
+                selectedLimit:
+                    application.selectedLimit,
 
                 status:
-                    payment.status
+                    "PENDING"
 
             });
 
@@ -578,588 +533,7 @@ app.post(
                 success: false,
 
                 error:
-                    "Unable to create payment."
-
-            });
-
-        }
-
-    }
-);
-
-
-/* =====================================================
-   REAL PAYLOR STK PUSH
-===================================================== */
-
-app.post(
-    "/api/payment/stk-push",
-    async (req, res) => {
-
-        try {
-
-            const {
-
-                paymentReference,
-                phone
-
-            } = req.body;
-
-
-            /* -----------------------------------------
-               VALIDATE REFERENCE
-            ----------------------------------------- */
-
-            if (
-                !paymentReference
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    error:
-                        "Payment reference is required."
-
-                });
-
-            }
-
-
-            /* -----------------------------------------
-               FIND PAYMENT
-            ----------------------------------------- */
-
-            const payment =
-                payments.get(
-                    paymentReference
-                );
-
-
-            if (!payment) {
-
-                return res.status(404).json({
-
-                    success: false,
-
-                    error:
-                        "Payment record not found."
-
-                });
-
-            }
-
-
-            /* -----------------------------------------
-               NORMALIZE PHONE
-            ----------------------------------------- */
-
-            const normalizedPhone =
-                normalizePhone(
-                    phone ||
-                    payment.phone
-                );
-
-
-            if (
-                !isValidPhone(
-                    normalizedPhone
-                )
-            ) {
-
-                return res.status(400).json({
-
-                    success: false,
-
-                    error:
-                        "Invalid Kenyan M-PESA phone number."
-
-                });
-
-            }
-
-
-            /* -----------------------------------------
-               PAYLOR CREDENTIALS
-            ----------------------------------------- */
-
-            const apiKey =
-                process.env.PAYLOR_API_KEY;
-
-
-            const channelId =
-                process.env.PAYLOR_CHANNEL_ID;
-
-
-            const callbackUrl =
-                process.env.PAYLOR_CALLBACK_URL;
-
-
-            if (!apiKey) {
-
-                return res.status(500).json({
-
-                    success: false,
-
-                    error:
-                        "Paylor API key is not configured."
-
-                });
-
-            }
-
-
-            /* -----------------------------------------
-               BUILD PAYLOR REQUEST
-            ----------------------------------------- */
-
-            const payload = {
-
-                phone:
-                    normalizedPhone,
-
-                amount:
-                    Number(
-                        payment.amount
-                    ),
-
-                reference:
-                    paymentReference,
-
-                description:
-                    "Payment for Service"
-
-            };
-
-
-            /*
-             * channelId is optional according
-             * to Paylor documentation.
-             */
-
-            if (channelId) {
-
-                payload.channelId =
-                    channelId;
-
-            }
-
-
-            /*
-             * callbackUrl is optional but
-             * recommended for instant updates.
-             */
-
-            if (callbackUrl) {
-
-                payload.callbackUrl =
-                    callbackUrl;
-
-            }
-
-
-            console.log(
-                "PAYLOR STK REQUEST:",
-                {
-                    phone:
-                        normalizedPhone,
-
-                    amount:
-                        payment.amount,
-
-                    reference:
-                        paymentReference
-                }
-            );
-
-
-            /* -----------------------------------------
-               CALL PAYLOR
-            ----------------------------------------- */
-
-            const paylorResponse =
-                await axios.post(
-
-                    PAYLOR_API_URL,
-
-                    payload,
-
-                    {
-
-                        headers: {
-
-                            Authorization:
-                                `Bearer ${apiKey}`,
-
-                            "Content-Type":
-                                "application/json",
-
-                            "Idempotency-Key":
-                                paymentReference
-
-                        },
-
-                        timeout:
-                            30000
-
-                    }
-
-                );
-
-
-            const paylorData =
-                paylorResponse.data;
-
-
-            console.log(
-                "PAYLOR STK RESPONSE:",
-                paylorData
-            );
-
-
-            /* -----------------------------------------
-               SAVE PAYLOR TRANSACTION
-            ----------------------------------------- */
-
-            payment.phone =
-                normalizedPhone;
-
-
-            payment.transactionId =
-                paylorData.transactionId;
-
-
-            payment.status =
-                paylorData.status ||
-                "SENT";
-
-
-            payment.updatedAt =
-                new Date().toISOString();
-
-
-            payments.set(
-                paymentReference,
-                payment
-            );
-
-
-            /* -----------------------------------------
-               RETURN TO FRONTEND
-            ----------------------------------------- */
-
-            return res.json({
-
-                success: true,
-
-                message:
-                    "STK Push sent successfully. Check your M-PESA phone.",
-
-                paymentReference,
-
-                transactionId:
-                    paylorData.transactionId,
-
-                status:
-                    paylorData.status
-
-            });
-
-
-        } catch (error) {
-
-            console.error(
-                "PAYLOR STK ERROR:",
-                error.response?.data ||
-                error.message
-            );
-
-
-            return res.status(
-                error.response?.status ||
-                500
-            ).json({
-
-                success: false,
-
-                error:
-                    error.response?.data?.message ||
-                    error.response?.data?.error ||
-                    "Unable to send STK Push."
-
-            });
-
-        }
-
-    }
-);
-
-
-/* =====================================================
-   PAYLOR WEBHOOK
-===================================================== */
-
-app.post(
-    "/api/paylor-callback",
-    (req, res) => {
-
-        try {
-
-            const signature =
-                req.headers[
-                    "x-webhook-signature"
-                ];
-
-
-            const secret =
-                process.env.PAYLOR_WEBHOOK_SECRET;
-
-
-            if (
-                !signature ||
-                !secret
-            ) {
-
-                return res.status(401).json({
-
-                    success: false,
-
-                    error:
-                        "Missing webhook signature."
-
-                });
-
-            }
-
-
-            /* -----------------------------------------
-               VERIFY RAW BODY
-            ----------------------------------------- */
-
-            const expectedSignature =
-                crypto
-                    .createHmac(
-                        "sha256",
-                        secret
-                    )
-                    .update(
-                        req.rawBody
-                    )
-                    .digest("hex");
-
-
-            const valid =
-                crypto.timingSafeEqual(
-
-                    Buffer.from(
-                        signature
-                    ),
-
-                    Buffer.from(
-                        expectedSignature
-                    )
-
-                );
-
-
-            if (!valid) {
-
-                return res.status(401).json({
-
-                    success: false,
-
-                    error:
-                        "Invalid webhook signature."
-
-                });
-
-            }
-
-
-            /* -----------------------------------------
-               READ EVENT
-            ----------------------------------------- */
-
-            const {
-
-                event,
-                transaction
-
-            } = req.body;
-
-
-            console.log(
-                "PAYLOR WEBHOOK:",
-                req.body
-            );
-
-
-            if (
-                !transaction ||
-                !transaction.reference
-            ) {
-
-                return res.json({
-
-                    received: true
-
-                });
-
-            }
-
-
-            const paymentReference =
-                transaction.reference;
-
-
-            const payment =
-                payments.get(
-                    paymentReference
-                );
-
-
-            if (!payment) {
-
-                console.warn(
-                    "Payment not found:",
-                    paymentReference
-                );
-
-                return res.json({
-
-                    received: true
-
-                });
-
-            }
-
-
-            /* -----------------------------------------
-               SUCCESS
-            ----------------------------------------- */
-
-            if (
-                event ===
-                "payment.success"
-            ) {
-
-                payment.status =
-                    "COMPLETED";
-
-
-                payment.transactionId =
-                    transaction.id;
-
-
-                payment.providerRef =
-                    transaction.providerRef ||
-                    null;
-
-
-                payment.mpesaReceipt =
-                    transaction.metadata
-                        ?.mpesaReceipt ||
-                    null;
-
-
-                payment.updatedAt =
-                    new Date().toISOString();
-
-
-                payments.set(
-                    paymentReference,
-                    payment
-                );
-
-
-                const order =
-                    orders.get(
-                        payment.orderReference
-                    );
-
-
-                if (order) {
-
-                    order.status =
-                        "COMPLETED";
-
-
-                    order.updatedAt =
-                        new Date().toISOString();
-
-
-                    orders.set(
-                        payment.orderReference,
-                        order
-                    );
-
-                }
-
-
-                console.log(
-                    "PAYMENT COMPLETED:",
-                    paymentReference
-                );
-
-            }
-
-
-            /* -----------------------------------------
-               FAILED
-            ----------------------------------------- */
-
-            else if (
-                event ===
-                "payment.failed"
-            ) {
-
-                payment.status =
-                    "FAILED";
-
-
-                payment.updatedAt =
-                    new Date().toISOString();
-
-
-                payments.set(
-                    paymentReference,
-                    payment
-                );
-
-
-                console.log(
-                    "PAYMENT FAILED:",
-                    paymentReference
-                );
-
-            }
-
-
-            /* -----------------------------------------
-               ACKNOWLEDGE PAYLOR
-            ----------------------------------------- */
-
-            return res.json({
-
-                received: true
-
-            });
-
-
-        } catch (error) {
-
-            console.error(
-                "PAYLOR CALLBACK ERROR:",
-                error
-            );
-
-
-            return res.status(500).json({
-
-                success: false,
-
-                error:
-                    "Unable to process Paylor callback."
+                    "Unable to create payment record."
 
             });
 
@@ -1179,8 +553,7 @@ app.get(
 
         const reference =
             String(
-                req.query.reference ||
-                ""
+                req.query.reference || ""
             ).trim();
 
 
@@ -1231,85 +604,105 @@ app.get(
 
 
 /* =====================================================
-   QUERY PAYLOR TRANSACTION
+   PAYMENT CALLBACK
 ===================================================== */
 
-app.get(
-    "/api/payment/query/:transactionId",
-    async (req, res) => {
+app.post(
+    "/api/payment/callback",
+    (req, res) => {
 
         try {
 
-            const transactionId =
-                String(
-                    req.params.transactionId ||
-                    ""
-                ).trim();
+            const {
+                reference,
+                status
+            } = req.body;
 
 
-            if (!transactionId) {
+            if (!reference) {
 
                 return res.status(400).json({
 
                     success: false,
 
                     error:
-                        "Transaction ID is required."
+                        "Reference is required."
 
                 });
 
             }
 
 
-            const apiKey =
-                process.env.PAYLOR_API_KEY;
+            const payment =
+                payments.get(
+                    reference
+                );
 
 
-            if (!apiKey) {
+            if (!payment) {
 
-                return res.status(500).json({
+                return res.status(404).json({
 
                     success: false,
 
                     error:
-                        "Paylor API key is not configured."
+                        "Payment record not found."
 
                 });
 
             }
 
 
-            const response =
-                await axios.get(
+            const normalizedStatus =
+                String(
+                    status || ""
+                ).toUpperCase();
 
-                    `${PAYLOR_QUERY_URL}/${encodeURIComponent(transactionId)}`,
 
-                    {
+            if (
+                normalizedStatus === "SUCCESS"
+            ) {
 
-                        headers: {
+                payment.status =
+                    "SUCCESS";
 
-                            Authorization:
-                                `Bearer ${apiKey}`,
+            } else if (
+                normalizedStatus === "FAILED"
+            ) {
 
-                            "Content-Type":
-                                "application/json"
+                payment.status =
+                    "FAILED";
 
-                        },
+            } else {
 
-                        timeout:
-                            30000
+                payment.status =
+                    "PENDING";
 
-                    }
+            }
 
-                );
+
+            payment.updatedAt =
+                new Date().toISOString();
+
+
+            payments.set(
+                reference,
+                payment
+            );
+
+
+            console.log(
+                "PAYMENT UPDATED:",
+                payment
+            );
 
 
             return res.json({
 
                 success: true,
 
-                transaction:
-                    response.data
+                status:
+                    payment.status
 
             });
 
@@ -1317,23 +710,17 @@ app.get(
         } catch (error) {
 
             console.error(
-                "PAYLOR QUERY ERROR:",
-                error.response?.data ||
-                error.message
+                "CALLBACK ERROR:",
+                error
             );
 
 
-            return res.status(
-                error.response?.status ||
-                500
-            ).json({
+            return res.status(500).json({
 
                 success: false,
 
                 error:
-                    error.response?.data?.message ||
-                    error.response?.data?.error ||
-                    "Unable to query transaction."
+                    "Unable to process callback."
 
             });
 
@@ -1376,11 +763,11 @@ app.listen(
         );
 
         console.log(
-            "PRIVATE SERVICE PAYMENT BACKEND"
+            "FULIZA PRIVATE FUNDS BACKEND"
         );
 
         console.log(
-            "LIVE PAYLOR MODE"
+            "LIVE MODE"
         );
 
         console.log(
@@ -1389,27 +776,6 @@ app.listen(
 
         console.log(
             `BACKEND: ${BACKEND_URL}`
-        );
-
-        console.log(
-            "PAYLOR API:",
-            Boolean(
-                process.env.PAYLOR_API_KEY
-            )
-        );
-
-        console.log(
-            "PAYLOR CHANNEL:",
-            Boolean(
-                process.env.PAYLOR_CHANNEL_ID
-            )
-        );
-
-        console.log(
-            "PAYLOR WEBHOOK:",
-            Boolean(
-                process.env.PAYLOR_WEBHOOK_SECRET
-            )
         );
 
         console.log(
