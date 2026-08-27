@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
+const axios = require("axios");
 require("dotenv").config();
 
 const app = express();
@@ -731,6 +732,98 @@ app.post(
 
 
 /* =====================================================
+   PAYLOR CONNECTION TEST
+===================================================== */
+
+app.get(
+    "/api/paylor-test",
+    async (req, res) => {
+
+        try {
+
+            const apiKey =
+                process.env.PAYLOR_API_KEY;
+
+
+            if (!apiKey) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    error:
+                        "PAYLOR_API_KEY is not configured."
+
+                });
+
+            }
+
+
+            const response =
+                await axios.get(
+                    "https://api.paylorke.com/api/v1/merchants/payments/wallet",
+                    {
+
+                        headers: {
+
+                            Authorization:
+                                `Bearer ${apiKey}`,
+
+                            "Content-Type":
+                                "application/json"
+
+                        },
+
+                        timeout: 15000
+
+                    }
+                );
+
+
+            return res.json({
+
+                success: true,
+
+                paylorConnected:
+                    true,
+
+                paylor:
+                    response.data
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "PAYLOR TEST ERROR:",
+                error.response?.data ||
+                error.message
+            );
+
+
+            return res.status(
+                error.response?.status || 500
+            ).json({
+
+                success: false,
+
+                paylorConnected:
+                    false,
+
+                error:
+                    error.response?.data ||
+                    error.message
+
+            });
+
+        }
+
+    }
+);
+
+
+/* =====================================================
    404
 ===================================================== */
 
@@ -780,6 +873,7 @@ app.listen(
 
         console.log(
             "================================="
+
         );
 
     }
