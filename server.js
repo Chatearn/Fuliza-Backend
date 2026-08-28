@@ -19,6 +19,15 @@ const PUBLIC_BASE_URL =
 
 
 /* =====================================================
+   PAYMENT STATUS STORAGE
+
+   Stores transactions while this server is running.
+===================================================== */
+
+const payments = new Map();
+
+
+/* =====================================================
    RAW BODY + JSON PARSING
 ===================================================== */
 
@@ -279,7 +288,7 @@ app.post("/api/stk-push", async (req, res) => {
 
 
         /* -----------------------------------------
-           READ PAYLOR RESPONSE
+           READ PAYLOR RESPONSE SAFELY
         ----------------------------------------- */
 
         const responseText =
@@ -289,9 +298,7 @@ app.post("/api/stk-push", async (req, res) => {
         let paylorData = {};
 
 
-        if(
-            responseText.trim()
-        ){
+        if(responseText.trim()){
 
             try {
 
@@ -342,7 +349,7 @@ app.post("/api/stk-push", async (req, res) => {
         if(!paylorResponse.ok){
 
             return res.status(
-                paylorResponse.status
+                paylorResponse.status || 502
             ).json({
 
                 success: false,
@@ -361,6 +368,69 @@ app.post("/api/stk-push", async (req, res) => {
 
 
         /* -----------------------------------------
+           TRANSACTION ID
+        ----------------------------------------- */
+
+        const transactionId =
+            paylorData.transactionId;
+
+
+        if(!transactionId){
+
+            console.error(
+                "Paylor response did not contain transactionId:",
+                paylorData
+            );
+
+            return res.status(502).json({
+
+                success: false,
+
+                message:
+                    "Paylor did not return a transaction ID."
+
+            });
+
+        }
+
+
+        /* -----------------------------------------
+           SAVE INITIAL PAYMENT STATUS
+        ----------------------------------------- */
+
+        payments.set(
+            String(transactionId),
+            {
+
+                transactionId:
+                    String(transactionId),
+
+                reference:
+                    String(reference),
+
+                status:
+                    paylorData.status ||
+                    "PENDING",
+
+                amount:
+                    Number(amount),
+
+                selectedLimit:
+                    selectedLimit
+                        ? Number(selectedLimit)
+                        : null,
+
+                createdAt:
+                    new Date().toISOString(),
+
+                updatedAt:
+                    new Date().toISOString()
+
+            }
+        );
+
+
+        /* -----------------------------------------
            SUCCESSFUL STK REQUEST
         ----------------------------------------- */
 
@@ -372,10 +442,11 @@ app.post("/api/stk-push", async (req, res) => {
                 "STK Push sent successfully. Check your M-PESA phone.",
 
             transactionId:
-                paylorData.transactionId,
+                String(transactionId),
 
             status:
-                paylorData.status,
+                paylorData.status ||
+                "PENDING",
 
             reference:
                 reference,
@@ -410,6 +481,134 @@ app.post("/api/stk-push", async (req, res) => {
     }
 
 });
+
+
+/* =====================================================
+   PAYMENT STATUS
+
+   Frontend can check:
+
+   GET /api/payment-status/TRANSACTION_ID
+===================================================== */
+
+app.get(
+    "/api/payment-status/:transactionId",
+    (req, res) => {
+
+        try {
+
+            const transactionId =
+                String(
+                    req.params.transactionId
+                ).trim();
+
+
+            if(!transactionId){
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Transaction ID is required."
+
+                });
+
+            }
+
+
+            const payment =
+                payments.get(
+                    transactionId
+                );
+
+
+            /* -----------------------------------------
+               TRANSACTION NOT FOUND
+            ----------------------------------------- */
+
+            if(!payment){
+
+                return res.status(404).json({
+
+                    success: false,
+
+                    message:
+                        "Transaction not found.",
+
+                    transactionId:
+                        transactionId
+
+                });
+
+            }
+
+
+            /* -----------------------------------------
+               RETURN STATUS
+            ----------------------------------------- */
+
+            return res.json({
+
+                success: true,
+
+                transactionId:
+                    payment.transactionId,
+
+                reference:
+                    payment.reference,
+
+                status:
+                    payment.status,
+
+                amount:
+                    payment.amount,
+
+                selectedLimit:
+                    payment.selectedLimit,
+
+                mpesaReceipt:
+                    payment.mpesaReceipt ||
+                    null,
+
+                providerRef:
+                    payment.providerRef ||
+                    null,
+
+                failureReason:
+                    payment.failureReason ||
+                    null,
+
+                createdAt:
+                    payment.createdAt,
+
+                updatedAt:
+                    payment.updatedAt
+
+            });
+
+
+        } catch(error) {
+
+            console.error(
+                "PAYMENT STATUS ERROR:",
+                error
+            );
+
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Unable to retrieve payment status."
+
+            });
+
+        }
+
+    }
+);
 
 
 /* =====================================================
@@ -544,6 +743,114 @@ app.post(
             );
 
 
+            if(!transaction){
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Transaction data is missing."
+
+                });
+
+            }
+
+
+            const transactionId =
+                transaction.id
+                    ? String(transaction.id)
+                    : null;
+
+
+            const reference =
+                transaction.reference
+                    ? String(transaction.reference)
+                    : null;
+
+
+            /* -----------------------------------------
+               FIND EXISTING PAYMENT
+            ----------------------------------------- */
+
+            let payment = null;
+
+
+            if(transactionId){
+
+                payment =
+                    payments.get(
+                        transactionId
+                    );
+
+            }
+
+
+            /* -----------------------------------------
+               CREATE RECORD IF NEEDED
+            ----------------------------------------- */
+
+            if(!payment){
+
+                payment = {
+
+                    transactionId:
+                        transactionId,
+
+                    reference:
+                        reference,
+
+                    status:
+                        transaction.status ||
+                        "PENDING",
+
+                    amount:
+                        transaction.amount
+                            ? Number(
+                                transaction.amount
+                            )
+                            : null,
+
+                    selectedLimit:
+                        null,
+
+                    createdAt:
+                        new Date().toISOString(),
+
+                    updatedAt:
+                        new Date().toISOString()
+
+                };
+
+            }
+
+
+            /* -----------------------------------------
+               UPDATE COMMON DATA
+            ----------------------------------------- */
+
+            payment.transactionId =
+                transactionId ||
+                payment.transactionId;
+
+            payment.reference =
+                reference ||
+                payment.reference;
+
+            payment.amount =
+                transaction.amount !== undefined
+                    ? Number(transaction.amount)
+                    : payment.amount;
+
+            payment.providerRef =
+                transaction.providerRef ||
+                payment.providerRef ||
+                null;
+
+            payment.updatedAt =
+                new Date().toISOString();
+
+
             /* -----------------------------------------
                PAYMENT SUCCESS
             ----------------------------------------- */
@@ -552,6 +859,23 @@ app.post(
                 event ===
                 "payment.success"
             ){
+
+                payment.status =
+                    "COMPLETED";
+
+
+                if(
+                    transaction.metadata &&
+                    transaction.metadata.mpesaReceipt
+                ){
+
+                    payment.mpesaReceipt =
+                        transaction
+                            .metadata
+                            .mpesaReceipt;
+
+                }
+
 
                 console.log(
                     "PAYMENT SUCCESS:",
@@ -570,9 +894,40 @@ app.post(
                 "payment.failed"
             ){
 
+                payment.status =
+                    "FAILED";
+
+
+                if(
+                    transaction.metadata &&
+                    transaction.metadata.callbackResultDesc
+                ){
+
+                    payment.failureReason =
+                        transaction
+                            .metadata
+                            .callbackResultDesc;
+
+                }
+
+
                 console.log(
                     "PAYMENT FAILED:",
                     transaction
+                );
+
+            }
+
+
+            /* -----------------------------------------
+               SAVE UPDATED PAYMENT
+            ----------------------------------------- */
+
+            if(payment.transactionId){
+
+                payments.set(
+                    payment.transactionId,
+                    payment
                 );
 
             }
@@ -585,6 +940,9 @@ app.post(
             return res.json({
 
                 received:
+                    true,
+
+                success:
                     true
 
             });
